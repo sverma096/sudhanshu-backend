@@ -1,0 +1,790 @@
+- Grayscale PDF
+- Protect PDF
+- Unlock PDF
+- Word Count
+- Metadata
+- PDF to JPG / Thumbnails
+- Blank PDF
+
+## Scaffolded but not fully implemented
+These routes return 501 for now:
+- /pdf-to-ppt
+- /crop
+- /resize
+- /redact
+- /sign
+- /flatten
+- /compare
+- /html-to-pdf
+- /markdown-to-pdf
+- /zip-to-pdf
+
+## Deploy on Render
+1. Push all files to a GitHub repo.
+2. In Render, create a new Web Service.
+3. Choose Docker as the runtime.
+4. Connect the repo and deploy.
+5. Use the Render URL in your frontend if frontend and backend are separate.
+
+## Notes
+- Files are stored only in `/app/temp` during processing.
+- Outputs and uploads are deleted after each response.
+
+pymupdf==1.24.9
+pdfplumber==0.11.4
+pypdf==4.3.1
+python-docx==1.1.2
+pandas==2.2.2
+openpyxl==3.1.5
+pillow==10.4.0
+pytesseract==0.3.10
+pdf2image==1.17.0
+reportlab==4.2.2
+
+const express = require("express");
+const multer = require("multer");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+const { execFile } = require("child_process");
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+const upload = multer({ dest: "temp/" });
+const uploadMany = upload.array("files", 20);
+
+function safeUnlink(filePath) {
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (e) {}
+}
+
+function cleanupUploaded(req) {
+  if (req.file) safeUnlink(req.file.path);
+  if (req.files && Array.isArray(req.files)) {
+    req.files.forEach((f) => safeUnlink(f.path));
+  }
+}
+
+function runPython(scriptName, args, res, cleanupFiles = []) {
+  const scriptPath = path.join(__dirname, "python", scriptName);
+  execFile("python3", [scriptPath, ...args], (error, stdout, stderr) => {
+    if (error) {
+      cleanupFiles.forEach(safeUnlink);
+      return res.status(500).send(stderr || error.message || "Processing failed");
+    }
+
+    let meta = {};
+    try {
+      meta = JSON.parse(stdout || "{}");
+    } catch (e) {
+      cleanupFiles.forEach(safeUnlink);
+      return res.status(500).send("Invalid processor output");
+    }
+
+    const outputPath = meta.output_path;
+    const downloadName = meta.download_name || path.basename(outputPath || "output.bin");
+    if (!outputPath || !fs.existsSync(outputPath)) {
+      cleanupFiles.forEach(safeUnlink);
+      return res.status(500).send("Output file not created");
+    }
+
+    res.download(outputPath, downloadName, () => {
+      safeUnlink(outputPath);
+      cleanupFiles.forEach(safeUnlink);
+    });
+  });
+}
+
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    app: "CAHELPER backend",
+    status: "running",
+    implemented_routes: [
+      "/merge", "/split", "/extract", "/delete-pages", "/reorder", "/rotate",
+      "/watermark", "/page-numbers", "/image-to-pdf", "/jpg-to-pdf",
+      "/pdf-to-word", "/pdf-to-excel", "/pdf-to-text", "/ocr-word",
+      "/ocr-excel", "/ocr-text", "/compress", "/grayscale", "/protect",
+      "/unlock", "/word-count", "/metadata", "/pdf-to-jpg", "/thumbnails",
+      "/blank"
+    ]
+  });
+});
+
+app.post("/merge", uploadMany, (req, res) => {
+  if (!req.files || req.files.length < 2) return res.status(400).send("Upload at least 2 files");
+  runPython("pdf_ops.py", ["merge", JSON.stringify(req.files.map(f => f.path))], res, req.files.map(f => f.path));
+});
+
+app.post("/split", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_ops.py", ["split", req.file.path], res, [req.file.path]);
+});
+
+app.post("/extract", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const pageRange = req.body.pageRange || "";
+  runPython("pdf_ops.py", ["extract", req.file.path, pageRange], res, [req.file.path]);
+});
+
+app.post("/delete-pages", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const pageRange = req.body.pageRange || "";
+  runPython("pdf_ops.py", ["delete", req.file.path, pageRange], res, [req.file.path]);
+});
+
+app.post("/reorder", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const pageRange = req.body.pageRange || "";
+  runPython("pdf_ops.py", ["reorder", req.file.path, pageRange], res, [req.file.path]);
+});
+
+app.post("/rotate", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const rotation = req.body.rotation || "90";
+  runPython("pdf_ops.py", ["rotate", req.file.path, rotation], res, [req.file.path]);
+});
+
+app.post("/watermark", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const text = req.body.watermarkText || "CAHELPER";
+  runPython("pdf_ops.py", ["watermark", req.file.path, text], res, [req.file.path]);
+});
+
+app.post("/page-numbers", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_ops.py", ["page_numbers", req.file.path], res, [req.file.path]);
+});
+
+app.post("/image-to-pdf", uploadMany, (req, res) => {
+  if (!req.files || !req.files.length) return res.status(400).send("Upload one or more images");
+  runPython("image_pdf.py", [JSON.stringify(req.files.map(f => f.path))], res, req.files.map(f => f.path));
+});
+
+app.post("/jpg-to-pdf", uploadMany, (req, res) => {
+  if (!req.files || !req.files.length) return res.status(400).send("Upload one or more JPG files");
+  runPython("image_pdf.py", [JSON.stringify(req.files.map(f => f.path))], res, req.files.map(f => f.path));
+});
+
+app.post("/pdf-to-word", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_to_word.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/pdf-to-excel", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_to_excel.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/pdf-to-text", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_to_text.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/ocr-word", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a file");
+  runPython("ocr_to_word.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/ocr-excel", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a file");
+  runPython("ocr_to_excel.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/ocr-text", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a file");
+  runPython("ocr_to_text.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/compress", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("compress_pdf.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/grayscale", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("grayscale_pdf.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/protect", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const password = req.body.password || "1234";
+  runPython("protect_pdf.py", [req.file.path, password], res, [req.file.path]);
+});
+
+app.post("/unlock", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  const password = req.body.password || "";
+  runPython("unlock_pdf.py", [req.file.path, password], res, [req.file.path]);
+});
+
+app.post("/word-count", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a file");
+  runPython("word_count.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/metadata", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("metadata_pdf.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/pdf-to-jpg", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_to_jpg.py", [req.file.path], res, [req.file.path]);
+});
+
+app.post("/thumbnails", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).send("Upload a PDF file");
+  runPython("pdf_to_jpg.py", [req.file.path, "--thumbs"], res, [req.file.path]);
+});
+
+app.post("/blank", (req, res) => {
+  runPython("blank_pdf.py", [], res, []);
+});
+
+// Placeholder routes for tools that need more UI/params or heavier engines.
+[
+  "/pdf-to-ppt", "/crop", "/resize", "/redact", "/sign", "/flatten",
+  "/compare", "/html-to-pdf", "/markdown-to-pdf", "/zip-to-pdf"
+].forEach((route) => {
+  app.post(route, uploadMany, (req, res) => {
+    cleanupUploaded(req);
+    res.status(501).send("Route scaffolded but not yet implemented in this starter backend.");
+  });
+});
+
+app.use((err, req, res, next) => {
+  cleanupUploaded(req);
+  res.status(500).send(err.message || "Server error");
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`CAHELPER backend running on port ${PORT}`);
+});
+from reportlab.pdfgen import canvas
+from utils import temp_output, print_result
+
+out = temp_output(".pdf")
+c = canvas.Canvas(out)
+c.showPage()
+c.save()
+print_result(out, "blank.pdf")
+
+import sys
+import fitz
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+doc = fitz.open(file_path)
+out = temp_output(".pdf")
+doc.save(out, garbage=4, deflate=True, clean=True)
+print_result(out, "compressed.pdf")
+
+import sys
+import fitz
+from utils import temp_output, print_result, zip_files
+
+file_path = sys.argv[1]
+doc = fitz.open(file_path)
+generated = []
+for i, page in enumerate(doc, start=1):
+    pix = page.get_pixmap(colorspace=fitz.csGRAY, alpha=False)
+    img_path = temp_output(".png")
+    pix.save(img_path)
+    generated.append((img_path, f"page-{i}.png"))
+zip_path, zip_name = zip_files(generated, "grayscale-pages.zip")
+print_result(zip_path, zip_name)
+
+import sys, json
+from PIL import Image
+from utils import temp_output, print_result
+
+files = json.loads(sys.argv[1])
+images = []
+for fp in files:
+    img = Image.open(fp)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    images.append(img)
+
+if not images:
+    raise ValueError("No images supplied")
+
+out = temp_output(".pdf")
+first, rest = images[0], images[1:]
+first.save(out, save_all=True, append_images=rest)
+print_result(out, "images.pdf")
+
+import sys, json
+from pypdf import PdfReader
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+reader = PdfReader(file_path)
+meta = reader.metadata or {}
+
+data = {
+    "pages": len(reader.pages),
+    "title": meta.get("/Title", ""),
+    "author": meta.get("/Author", ""),
+    "subject": meta.get("/Subject", ""),
+    "creator": meta.get("/Creator", ""),
+    "producer": meta.get("/Producer", "")
+}
+
+out = temp_output(".json")
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+print_result(out, "metadata.json")
+
+import sys, os, re
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path
+from openpyxl import Workbook
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+wb = Workbook()
+ws = wb.active
+ws.title = "OCR"
+row_idx = 1
+
+if file_path.lower().endswith(".pdf"):
+    images = convert_from_path(file_path)
+else:
+    images = [Image.open(file_path)]
+
+for img in images:
+    text = pytesseract.image_to_string(img)
+    for line in text.splitlines():
+        cols = [c for c in re.split(r"\t+|\s{2,}", line.strip()) if c]
+        if not cols:
+            continue
+        for col_idx, val in enumerate(cols, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+        row_idx += 1
+
+out = temp_output(".xlsx")
+wb.save(out)
+print_result(out, "ocr-output.xlsx")
+
+import sys, os
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+text_parts = []
+
+if file_path.lower().endswith(".pdf"):
+    images = convert_from_path(file_path)
+else:
+    images = [Image.open(file_path)]
+
+for img in images:
+    text_parts.append(pytesseract.image_to_string(img))
+
+out = temp_output(".txt")
+with open(out, "w", encoding="utf-8") as f:
+    f.write("\n\n".join(text_parts))
+print_result(out, "ocr-output.txt")
+
+import sys, os
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path
+from docx import Document
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+doc = Document()
+
+if file_path.lower().endswith(".pdf"):
+    images = convert_from_path(file_path)
+else:
+    images = [Image.open(file_path)]
+
+for img in images:
+    text = pytesseract.image_to_string(img)
+    for para in text.split("\n"):
+        doc.add_paragraph(para)
+
+out = temp_output(".docx")
+doc.save(out)
+print_result(out, "ocr-output.docx")
+
+import sys, json, os
+from pypdf import PdfReader, PdfWriter
+from reportlab.pdfgen import canvas
+from reportlab.lib.colors import Color, black
+from io import BytesIO
+from pathlib import Path
+from utils import temp_output, print_result, zip_files, parse_pages
+
+def merge(file_list_json):
+    files = json.loads(file_list_json)
+    writer = PdfWriter()
+    for fp in files:
+        reader = PdfReader(fp)
+        for page in reader.pages:
+            writer.add_page(page)
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "merged.pdf")
+
+def split(file_path):
+    reader = PdfReader(file_path)
+    generated = []
+    for i, page in enumerate(reader.pages, start=1):
+        writer = PdfWriter()
+        writer.add_page(page)
+        out = temp_output(".pdf")
+        with open(out, "wb") as f:
+            writer.write(f)
+        generated.append((out, f"page-{i}.pdf"))
+    zip_path, zip_name = zip_files(generated, "split-pages.zip")
+    print_result(zip_path, zip_name)
+
+def extract(file_path, page_range):
+    reader = PdfReader(file_path)
+    pages = parse_pages(page_range, len(reader.pages))
+    if not pages:
+        raise ValueError("No valid pages in pageRange")
+    writer = PdfWriter()
+    for idx in pages:
+        writer.add_page(reader.pages[idx])
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "extracted-pages.pdf")
+
+def delete(file_path, page_range):
+    reader = PdfReader(file_path)
+    to_delete = set(parse_pages(page_range, len(reader.pages)))
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages):
+        if i not in to_delete:
+            writer.add_page(page)
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "pages-deleted.pdf")
+
+def reorder(file_path, page_range):
+    reader = PdfReader(file_path)
+    order = parse_pages(page_range, len(reader.pages))
+    if not order:
+        raise ValueError("No valid pages in pageRange")
+    writer = PdfWriter()
+    for idx in order:
+        writer.add_page(reader.pages[idx])
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "reordered.pdf")
+
+def rotate(file_path, rotation):
+    reader = PdfReader(file_path)
+    writer = PdfWriter()
+    deg = int(rotation)
+    for page in reader.pages:
+        page.rotate(deg)
+        writer.add_page(page)
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "rotated.pdf")
+
+def _make_overlay(text, width, height, page_no=None):
+    packet = BytesIO()
+    c = canvas.Canvas(packet, pagesize=(float(width), float(height)))
+    if text:
+        c.saveState()
+        c.setFillColor(Color(0.85, 0.35, 0.05, alpha=0.18))
+        c.setFont("Helvetica-Bold", 38)
+        c.translate(width/4, height/2)
+        c.rotate(35)
+        c.drawString(0, 0, text)
+        c.restoreState()
+    if page_no is not None:
+        c.setFillColor(black)
+        c.setFont("Helvetica", 10)
+        c.drawString(20, 20, f"Page {page_no}")
+    c.save()
+    packet.seek(0)
+    return PdfReader(packet)
+
+def watermark(file_path, text):
+    reader = PdfReader(file_path)
+    writer = PdfWriter()
+    for page in reader.pages:
+        overlay_reader = _make_overlay(text, float(page.mediabox.width), float(page.mediabox.height))
+        overlay_page = overlay_reader.pages[0]
+        page.merge_page(overlay_page)
+        writer.add_page(page)
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "watermarked.pdf")
+
+def page_numbers(file_path):
+    reader = PdfReader(file_path)
+    writer = PdfWriter()
+    for i, page in enumerate(reader.pages, start=1):
+        overlay_reader = _make_overlay("", float(page.mediabox.width), float(page.mediabox.height), i)
+        overlay_page = overlay_reader.pages[0]
+        page.merge_page(overlay_page)
+        writer.add_page(page)
+    out = temp_output(".pdf")
+    with open(out, "wb") as f:
+        writer.write(f)
+    print_result(out, "page-numbered.pdf")
+
+if __name__ == "__main__":
+    action = sys.argv[1]
+    if action == "merge":
+        merge(sys.argv[2])
+    elif action == "split":
+        split(sys.argv[2])
+    elif action == "extract":
+        extract(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
+    elif action == "delete":
+        delete(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
+    elif action == "reorder":
+        reorder(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "")
+    elif action == "rotate":
+        rotate(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "90")
+    elif action == "watermark":
+        watermark(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "CAHELPER")
+    elif action == "page_numbers":
+        page_numbers(sys.argv[2])
+    else:
+        raise ValueError("Unsupported action")
+
+import sys
+import pdfplumber
+from openpyxl import Workbook
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+wb = Workbook()
+ws = wb.active
+ws.title = "Extracted"
+
+row_idx = 1
+with pdfplumber.open(file_path) as pdf:
+    for page in pdf.pages:
+        tables = page.extract_tables() or []
+        if tables:
+            for table in tables:
+                for row in table:
+                    clean = [("" if cell is None else str(cell)) for cell in row]
+                    for col_idx, val in enumerate(clean, start=1):
+                        ws.cell(row=row_idx, column=col_idx, value=val)
+                    row_idx += 1
+                row_idx += 1
+        else:
+            text = page.extract_text() or ""
+            for line in text.splitlines():
+                ws.cell(row=row_idx, column=1, value=line)
+                row_idx += 1
+
+out = temp_output(".xlsx")
+wb.save(out)
+print_result(out, "output.xlsx")
+
+import sys
+import fitz
+from utils import temp_output, print_result, zip_files
+
+file_path = sys.argv[1]
+thumb_mode = len(sys.argv) > 2 and sys.argv[2] == "--thumbs"
+
+doc = fitz.open(file_path)
+generated = []
+for i, page in enumerate(doc, start=1):
+    matrix = fitz.Matrix(1.0, 1.0) if thumb_mode else fitz.Matrix(2.0, 2.0)
+    pix = page.get_pixmap(matrix=matrix, alpha=False)
+    img_path = temp_output(".jpg")
+    pix.save(img_path)
+    generated.append((img_path, f"page-{i}.jpg"))
+
+zip_path, zip_name = zip_files(generated, "thumbnails.zip" if thumb_mode else "pdf-to-jpg.zip")
+print_result(zip_path, zip_name)
+
+import sys
+import pdfplumber
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+parts = []
+with pdfplumber.open(file_path) as pdf:
+    for page in pdf.pages:
+        parts.append(page.extract_text() or "")
+text = "\n\n".join(parts)
+
+out = temp_output(".txt")
+with open(out, "w", encoding="utf-8") as f:
+    f.write(text)
+print_result(out, "output.txt")
+
+import sys
+import pdfplumber
+from docx import Document
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+doc = Document()
+
+with pdfplumber.open(file_path) as pdf:
+    for page in pdf.pages:
+        text = page.extract_text() or ""
+        if text.strip():
+            for para in text.split("\n"):
+                doc.add_paragraph(para)
+        else:
+            doc.add_paragraph("")
+
+out = temp_output(".docx")
+doc.save(out)
+print_result(out, "output.docx")
+
+import sys
+from pypdf import PdfReader, PdfWriter
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+password = sys.argv[2] if len(sys.argv) > 2 else "1234"
+
+reader = PdfReader(file_path)
+writer = PdfWriter()
+for page in reader.pages:
+    writer.add_page(page)
+writer.encrypt(password)
+
+out = temp_output(".pdf")
+with open(out, "wb") as f:
+    writer.write(f)
+print_result(out, "protected.pdf")
+
+import sys
+from pypdf import PdfReader, PdfWriter
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+password = sys.argv[2] if len(sys.argv) > 2 else ""
+
+reader = PdfReader(file_path)
+if reader.is_encrypted:
+    if password:
+        reader.decrypt(password)
+    else:
+        raise ValueError("Password required to unlock this PDF")
+
+writer = PdfWriter()
+for page in reader.pages:
+    writer.add_page(page)
+
+out = temp_output(".pdf")
+with open(out, "wb") as f:
+    writer.write(f)
+print_result(out, "unlocked.pdf")
+
+import os
+import json
+import tempfile
+import zipfile
+from pathlib import Path
+
+TEMP_DIR = Path("/app/temp") if Path("/app/temp").exists() else Path("temp")
+TEMP_DIR.mkdir(exist_ok=True)
+
+def temp_output(suffix):
+    fd, path = tempfile.mkstemp(suffix=suffix, dir=str(TEMP_DIR))
+    os.close(fd)
+    return path
+
+def print_result(output_path, download_name=None):
+    print(json.dumps({
+        "output_path": output_path,
+        "download_name": download_name or os.path.basename(output_path)
+    }))
+
+def zip_files(file_paths, zip_name="output.zip"):
+    zip_path = temp_output(".zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+      for file_path, arc_name in file_paths:
+        zf.write(file_path, arc_name)
+    return zip_path, zip_name
+
+def parse_pages(range_str, page_count):
+    if not range_str:
+        return []
+    result = []
+    seen = set()
+    for part in range_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            try:
+                a = int(a.strip())
+                b = int(b.strip())
+            except:
+                continue
+            start = min(a, b)
+            end = max(a, b)
+            for n in range(start, end + 1):
+                idx = n - 1
+                if 0 <= idx < page_count and idx not in seen:
+                    seen.add(idx)
+                    result.append(idx)
+        else:
+            try:
+                n = int(part)
+                idx = n - 1
+                if 0 <= idx < page_count and idx not in seen:
+                    seen.add(idx)
+                    result.append(idx)
+            except:
+                continue
+    return result
+
+import sys
+from pathlib import Path
+import pdfplumber
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path
+from utils import temp_output, print_result
+
+file_path = sys.argv[1]
+ext = Path(file_path).suffix.lower()
+text = ""
+
+if ext == ".pdf":
+    with pdfplumber.open(file_path) as pdf:
+        text = "\n".join((page.extract_text() or "") for page in pdf.pages)
+elif ext in [".png", ".jpg", ".jpeg", ".tiff", ".bmp"]:
+    text = pytesseract.image_to_string(Image.open(file_path))
+else:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+
+words = [w for w in text.split() if w.strip()]
+chars = len(text)
+
+out = temp_output(".txt")
+with open(out, "w", encoding="utf-8") as f:
+    f.write(f"Words: {len(words)}\nCharacters: {chars}\n")
+print_result(out, "word-count.txt")
