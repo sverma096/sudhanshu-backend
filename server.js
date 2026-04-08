@@ -1,3 +1,127 @@
+/**
+ * CAHELPER Backend - Single File
+ * Includes:
+ * - Auth (Signup/Login)
+ * - JWT security
+ * - User-wise job history
+ * - PDF tool integration
+ */
+
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const multer = require("multer");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const upload = multer({ dest: "temp/" });
+const JWT_SECRET = "CAHELPER_SECRET";
+
+// ---------- INIT ----------
+if (!fs.existsSync("temp")) fs.mkdirSync("temp");
+if (!fs.existsSync("data")) fs.mkdirSync("data");
+if (!fs.existsSync("data/users.json")) fs.writeFileSync("data/users.json", "[]");
+if (!fs.existsSync("data/jobs.json")) fs.writeFileSync("data/jobs.json", "[]");
+
+// ---------- HELPERS ----------
+const read = (file) => JSON.parse(fs.readFileSync(file));
+const write = (file, data) => fs.writeFileSync(file, JSON.stringify(data, null, 2));
+
+const hash = (pwd) => crypto.createHash("sha256").update(pwd).digest("hex");
+
+const auth = (req, res, next) => {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).send("No token");
+
+  try {
+    const data = jwt.verify(token, JWT_SECRET);
+    req.user = data;
+    next();
+  } catch {
+    res.status(401).send("Invalid token");
+  }
+};
+
+// ---------- AUTH ----------
+app.post("/auth/signup", (req, res) => {
+  const { name, email, password } = req.body;
+
+  let users = read("data/users.json");
+
+  if (users.find(u => u.email === email))
+    return res.send("User exists");
+
+  users.push({
+    id: crypto.randomUUID(),
+    name,
+    email,
+    password: hash(password)
+  });
+
+  write("data/users.json", users);
+
+  res.send("Signup success");
+});
+
+app.post("/auth/login", (req, res) => {
+  const { email, password } = req.body;
+
+  let users = read("data/users.json");
+
+  const user = users.find(u => u.email === email && u.password === hash(password));
+
+  if (!user) return res.status(401).send("Invalid");
+
+  const token = jwt.sign(user, JWT_SECRET);
+
+  res.json({ token, user });
+});
+
+// ---------- JOB HISTORY ----------
+app.get("/jobs", auth, (req, res) => {
+  let jobs = read("data/jobs.json");
+
+  res.json(jobs.filter(j => j.userId === req.user.id));
+});
+
+function saveJob(userId, tool, fileName, status) {
+  let jobs = read("data/jobs.json");
+
+  jobs.unshift({
+    id: crypto.randomUUID(),
+    userId,
+    tool,
+    fileName,
+    status,
+    time: new Date()
+  });
+
+  write("data/jobs.json", jobs);
+}
+
+// ---------- SAMPLE TOOL (MERGE DEMO) ----------
+app.post("/merge", auth, upload.array("files"), (req, res) => {
+  if (!req.files.length) return res.send("Upload files");
+
+  // 🔴 Replace this with your Python call
+  saveJob(req.user.id, "Merge PDF", req.files[0].originalname, "success");
+
+  res.send("Merged (dummy response)");
+});
+
+// ---------- HEALTH ----------
+app.get("/", (req, res) => {
+  res.send("CAHELPER Backend Running");
+});
+
+// ---------- START ----------
+app.listen(10000, () => console.log("Server running on 10000"));
 const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
