@@ -1,0 +1,20 @@
+backend/
+│
+├── server.js
+├── package.json
+│
+├── models/
+│   ├── User.js
+│   ├── History.js
+│
+├── routes/
+│   ├── auth.js
+│   ├── tools.js
+│
+├── middleware/
+│   └── auth.js
+│
+├── utils/
+│   ├── pdf.js
+│   ├── ocr.js
+│   ├── excel.js
