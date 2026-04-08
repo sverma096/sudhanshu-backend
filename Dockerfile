@@ -13,10 +13,9 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-COPY requirements.txt ./
-RUN pip3 install --no-cache-dir -r requirements.txt
-
 COPY . .
+
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 ENV PORT=10000
 EXPOSE 10000
