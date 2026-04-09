@@ -1,12 +1,11 @@
 const jwt = require("jsonwebtoken");
 
-// Optional auth — attaches user if token is valid, but never blocks guests
 module.exports = function optionalAuth(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
-    req.user = null; // Guest — that's fine
+    req.user = null;
     return next();
   }
 
@@ -14,7 +13,7 @@ module.exports = function optionalAuth(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || "SECRET");
     req.user = decoded;
   } catch {
-    req.user = null; // Bad/expired token — treat as guest
+    req.user = null;
   }
 
   next();
